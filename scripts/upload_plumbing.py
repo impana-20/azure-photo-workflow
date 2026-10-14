@@ -1,114 +1,161 @@
+
 import os
 from pathlib import Path
 
-from azure.storage.blob import BlobServiceClient
-from azure.storage.blob import ContentSettings
+from dotenv import load_dotenv
+from azure.storage.blob import (
+    BlobServiceClient,
+    ContentSettings,
+)
 
+# ==========================================
+# 1. PROJECT AND SOURCE FOLDERS
+# ==========================================
 
-# Local extracted ZIP folder
-LOCAL_FOLDER = Path(r"C:\Users\Impana S\Downloads\Azure_Plumbing_Image_Upload_Project (1)\data_collection\Electrical")
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = PROJECT_DIR / "data_collection"
 
-# Azure details
+# Check these folder names against your actual folders.
+FOLDERS_TO_UPLOAD = {
+    "Hardware": "Hardware",
+    "Sanitory": "Sanitory",
+    "Electrical":"Electrical"
+    }
+
+# ==========================================
+# 2. AZURE SETTINGS
+# ==========================================
+
 CONTAINER_NAME = "nivora"
 
-# Exact destination shown in Azure Portal
-AZURE_FOLDER = "Nivora Products/categories/Electrical"
+AZURE_BASE_FOLDER = "Nivora Products/categories"
 
-# Image formats to upload
-IMAGE_EXTENSIONS = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp"
+IMAGE_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
 }
 
+# ==========================================
+# 3. LOAD AZURE CONNECTION STRING
+# ==========================================
 
-# Get Azure connection string
-connection_string = os.environ.get(
+load_dotenv(PROJECT_DIR / ".env")
+
+CONNECTION_STRING = os.getenv(
     "AZURE_STORAGE_CONNECTION_STRING"
 )
 
-if not connection_string:
+if not CONNECTION_STRING:
     raise ValueError(
-        "Azure connection string not found."
+        "Azure connection string not found. "
+        "Check the .env file in your project folder."
     )
 
+# ==========================================
+# 4. VERIFY SOURCE FOLDERS
+# ==========================================
 
-# Connect to Azure
-blob_service_client = BlobServiceClient.from_connection_string(
-    connection_string
+if not DATA_DIR.is_dir():
+    raise FileNotFoundError(
+        f"Data folder not found: {DATA_DIR}"
+    )
+
+selected_folders = {}
+
+for category, folder_name in FOLDERS_TO_UPLOAD.items():
+    source = DATA_DIR / folder_name
+
+    if not source.is_dir():
+        raise FileNotFoundError(
+            f"Folder not found: {source}\n"
+            "Check the actual folder name and spelling."
+        )
+
+    selected_folders[category] = source
+
+# ==========================================
+# 5. CONNECT TO AZURE
+# ==========================================
+
+service = BlobServiceClient.from_connection_string(
+    CONNECTION_STRING
 )
 
-container_client = blob_service_client.get_container_client(
+container = service.get_container_client(
     CONTAINER_NAME
 )
 
+print("Azure connection successful!")
+print("Container:", CONTAINER_NAME)
 
-# Check local folder
-if not LOCAL_FOLDER.exists():
-    raise FileNotFoundError(
-        f"Folder not found: {LOCAL_FOLDER.resolve()}"
-    )
-
+# ==========================================
+# 6. UPLOAD ONLY HARDWARE AND SANITORY
+# ==========================================
 
 uploaded = 0
 skipped = 0
 
+for category, source_folder in selected_folders.items():
 
-print("Starting Plumbing image upload...\n")
+    print(f"\nProcessing category: {category}")
 
+    category_uploaded = 0
 
-# Recursively find files
-for file_path in LOCAL_FOLDER.rglob("*"):
+    # Recursively upload image files only.
+    for file_path in source_folder.rglob("*"):
 
-    if not file_path.is_file():
-        continue
+        if not file_path.is_file():
+            continue
 
-    # Skip desktop.ini and other non-image files
-    if file_path.suffix.lower() not in IMAGE_EXTENSIONS:
-        skipped += 1
-        continue
+        extension = file_path.suffix.lower()
 
-    # Preserve UPVC and all subfolders
-    relative_path = file_path.relative_to(LOCAL_FOLDER)
+        if extension not in IMAGE_TYPES:
+            skipped += 1
+            continue
 
-    blob_path = (
-        f"{AZURE_FOLDER}/"
-        f"{relative_path.as_posix()}"
-    )
+        relative_path = file_path.relative_to(source_folder)
 
-    # Set correct content type
-    content_type = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp"
-    }[file_path.suffix.lower()]
-
-    print(f"Uploading: {file_path}")
-    print(f"Azure: {blob_path}")
-
-    with open(file_path, "rb") as data:
-
-        container_client.upload_blob(
-            name=blob_path,
-            data=data,
-            overwrite=True,
-            content_settings=ContentSettings(
-                content_type=content_type
-            )
+        blob_name = (
+            f"{AZURE_BASE_FOLDER}/{category}/"
+            f"{relative_path.as_posix()}"
         )
 
-    uploaded += 1
+        content_type = IMAGE_TYPES[extension]
 
+        print(f"Uploading: {relative_path.as_posix()}")
 
-print("\n==============================")
-print("Upload completed successfully!")
+        with file_path.open("rb") as file_data:
+            container.upload_blob(
+                name=blob_name,
+                data=file_data,
+                overwrite=True,
+                content_settings=ContentSettings(
+                    content_type=content_type
+                ),
+            )
+
+        uploaded += 1
+        category_uploaded += 1
+
+    print(
+        f"{category} completed: "
+        f"{category_uploaded} images uploaded"
+    )
+
+# ==========================================
+# 7. UPLOAD SUMMARY
+# ==========================================
+
+print("\n====================================")
+print("HARDWARE AND SANITORY UPLOAD FINISHED")
 print(f"Images uploaded: {uploaded}")
 print(f"Non-image files skipped: {skipped}")
-print("==============================")
+print("====================================")
 
 print(
-    "\nUploaded to:"
-    f"\n{CONTAINER_NAME}/{AZURE_FOLDER}"
+    f"\nAzure paths:\n"
+    f"{CONTAINER_NAME}/{AZURE_BASE_FOLDER}/Hardware/\n"
+    f"{CONTAINER_NAME}/{AZURE_BASE_FOLDER}/Sanitory/"
 )
